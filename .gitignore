@@ -1,0 +1,19 @@
+# Virtual environment
+venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS metadata
+.DS_Store
+
+# Temporary scratch directory
+scratch/
+
+# Excluded folders / files as per requirements
+old_tests/
+synthetic/
+idea.md
+idea.pdf
