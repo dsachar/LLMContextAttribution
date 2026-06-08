@@ -14,7 +14,7 @@ scratch/
 
 # Excluded folders / files as per requirements
 old_tests/
-synthetic/
+biases/
 idea.md
 idea.pdf
 llm_cache.json
