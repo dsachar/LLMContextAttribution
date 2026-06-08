@@ -3,6 +3,32 @@ import math
 import itertools
 from dataclasses import dataclass
 from typing import List, Callable
+import json
+import os
+import atexit
+
+_CACHE_PATH = os.path.relpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "llm_cache.json"))
+_PERSISTENT_CACHE = {}
+
+if os.path.exists(_CACHE_PATH):
+    try:
+        with open(_CACHE_PATH, "r") as f:
+            _PERSISTENT_CACHE = json.load(f)
+    except Exception as e:
+        print(f"Error loading cache: {e}")
+
+def save_cache():
+    try:
+        dir_name = os.path.dirname(_CACHE_PATH)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        with open(_CACHE_PATH, "w") as f:
+            json.dump(_PERSISTENT_CACHE, f, indent=2)
+    except Exception as e:
+        print(f"Error saving cache: {e}")
+
+atexit.register(save_cache)
+
 
 @dataclass
 class Example:
@@ -33,10 +59,11 @@ def load_model_and_tokenizer(model_name=None, backend=None):
 
 def format_prompt(tokenizer, question, sentences):
     context = " ".join(sentences)
+    instruction = "Answer in one or two sentences and only use the context provided."
     if context.strip():
-        user_content = f"Question: {question}\n\nContext:\n{context}"
+        user_content = f"Instruction: {instruction}\n\nQuestion: {question}\n\nContext:\n{context}"
     else:
-        user_content = f"Question: {question}"
+        user_content = f"Instruction: {instruction}\n\nQuestion: {question}"
         
     messages = [{"role": "user", "content": user_content}]
     
@@ -48,6 +75,9 @@ def format_prompt(tokenizer, question, sentences):
     return prompt
 
 def compute_log_likelihood_unweighted(model, tokenizer, question, sentences, response, *, backend):
+    cache_key = f"ll_unweighted::{question}::{'|'.join(sentences)}::{response}"
+    if cache_key in _PERSISTENT_CACHE:
+        return _PERSISTENT_CACHE[cache_key]
     prompt = format_prompt(tokenizer, question, sentences)
     prompt_tokens = tokenizer.encode(prompt)
     response_tokens = tokenizer.encode(response, add_special_tokens=False)
@@ -62,12 +92,16 @@ def compute_log_likelihood_unweighted(model, tokenizer, question, sentences, res
         target_token = all_tokens[i]
         token_log_prob = backend.get_value(log_probs, 0, logit_idx, target_token)
         ll += token_log_prob
+    _PERSISTENT_CACHE[cache_key] = ll
     return ll
 
 def compute_log_likelihood(model, tokenizer, question, sentences, response, *, backend):
     """
     Computes the prefix-weighted log likelihood of 'response' given 'question' and 'sentences'.
     """
+    cache_key = f"ll_weighted::{question}::{'|'.join(sentences)}::{response}"
+    if cache_key in _PERSISTENT_CACHE:
+        return _PERSISTENT_CACHE[cache_key]
     prompt = format_prompt(tokenizer, question, sentences)
     prompt_tokens = tokenizer.encode(prompt)
     response_tokens = tokenizer.encode(response, add_special_tokens=False)
@@ -90,6 +124,7 @@ def compute_log_likelihood(model, tokenizer, question, sentences, response, *, b
         weight = N - idx_in_response
         ll += weight * token_log_prob
         
+    _PERSISTENT_CACHE[cache_key] = ll
     return ll
 
 def compute_log_likelihood_wod_unweighted(model, tokenizer, question, sentences, response, *, backend, alpha=1.0):
@@ -234,6 +269,9 @@ def compute_llm_similarity(model, tokenizer, r_grand, r_coalition, *, backend):
     return 0.5
 
 def get_bert_similarity(r_grand, r_coalition, model_name="sentence-transformers/all-mpnet-base-v2"):
+    cache_key = f"bert_sim::{model_name}::{r_grand}::{r_coalition}"
+    if cache_key in _PERSISTENT_CACHE:
+        return _PERSISTENT_CACHE[cache_key]
     global _bert_model, _bert_tokenizer
     if r_grand.strip() == r_coalition.strip():
         return 1.0
@@ -265,7 +303,9 @@ def get_bert_similarity(r_grand, r_coalition, model_name="sentence-transformers/
         
         cos = torch.nn.CosineSimilarity(dim=0)
         similarity = cos(embeddings[0], embeddings[1]).item()
-        return float(similarity)
+        res = float(similarity)
+        _PERSISTENT_CACHE[cache_key] = res
+        return res
 
 def compute_semantic_similarity(model, tokenizer, r_grand, r_coalition, v_type, *, backend, similarity_fn=None):
     if similarity_fn is not None:
@@ -276,7 +316,12 @@ def compute_semantic_similarity(model, tokenizer, r_grand, r_coalition, v_type, 
         return get_bert_similarity(r_grand, r_coalition)
 
 def generate_response(model, tokenizer, prompt, *, backend, max_tokens=128):
-    return backend.generate(model, tokenizer, prompt, max_tokens=max_tokens)
+    cache_key = f"generate::{prompt}::{max_tokens}"
+    if cache_key in _PERSISTENT_CACHE:
+        return _PERSISTENT_CACHE[cache_key]
+    res = backend.generate(model, tokenizer, prompt, max_tokens=max_tokens)
+    _PERSISTENT_CACHE[cache_key] = res
+    return res
 
 def compute_v(model, tokenizer, question, subset_sentences, response, empty_ll, *, backend, base_sentences=None, distractor=None, empty_ll_dist=None, v_type="logprob_difference", v_func=None, similarity_fn=None, max_gen_tokens=128, empty_sim=None):
     """
